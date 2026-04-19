@@ -191,6 +191,8 @@ public class SoftApManager implements ActiveModeManager {
     @VisibleForTesting
     static final long SOFT_AP_PENDING_DISCONNECTION_CHECK_DELAY_MS = 1000;
 
+    private static final long SOFT_AP_BLOCKED_CLIENT_REJECT_COOLDOWN_MS = 2000;
+
     private static final long SCHEDULE_IDLE_INSTANCE_SHUTDOWN_TIMEOUT_DELAY_MS = 10;
 
     private String mCountryCode;
@@ -287,6 +289,9 @@ public class SoftApManager implements ActiveModeManager {
 
     @NonNull
     private Set<MacAddress> mBlockedClientList = new HashSet<>();
+
+    @NonNull
+    private final Map<MacAddress, Long> mBlockedClientLastRejectElapsedMs = new HashMap<>();
 
     @NonNull
     private Set<MacAddress> mAllowedClientList = new HashSet<>();
@@ -407,6 +412,7 @@ public class SoftApManager implements ActiveModeManager {
             return;
         }
         mBlockedClientList = new HashSet<>(mCurrentSoftApConfiguration.getBlockedClientList());
+        mBlockedClientLastRejectElapsedMs.keySet().retainAll(mBlockedClientList);
         mAllowedClientList = new HashSet<>(mCurrentSoftApConfiguration.getAllowedClientList());
         mTimeoutEnabled = mCurrentSoftApConfiguration.isAutoShutdownEnabled();
         mBridgedModeOpportunisticsShutdownTimeoutEnabled =
@@ -1028,9 +1034,17 @@ public class SoftApManager implements ActiveModeManager {
         }
 
         if (mBlockedClientList.contains(newClient.getMacAddress())) {
+            MacAddress blockedMac = newClient.getMacAddress();
+            long nowMs = SystemClock.elapsedRealtime();
+            Long lastRejectMs = mBlockedClientLastRejectElapsedMs.get(blockedMac);
+            if (lastRejectMs != null
+                    && nowMs - lastRejectMs < SOFT_AP_BLOCKED_CLIENT_REJECT_COOLDOWN_MS) {
+                return false;
+            }
+            mBlockedClientLastRejectElapsedMs.put(blockedMac, nowMs);
             Log.d(getTag(), "Force disconnect for client: " + newClient + "in blocked list");
             if (!mWifiNative.forceClientDisconnect(
-                    mApInterfaceName, newClient.getMacAddress(),
+                    mApInterfaceName, blockedMac,
                     WifiManager.SAP_CLIENT_BLOCK_REASON_CODE_BLOCKED_BY_USER)) {
                 addClientToPendingDisconnectionList(newClient,
                         WifiManager.SAP_CLIENT_BLOCK_REASON_CODE_BLOCKED_BY_USER);
